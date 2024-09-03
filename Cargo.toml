@@ -50,3 +50,7 @@ lto = true
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz", "--enable-mutable-globals"]
+
+[[bin]]
+name = "myLibTest"
+path = "src/myLibTest.rs"
