@@ -25,9 +25,11 @@ lazy_static! {
         regex::Regex::new(r"\{([^{}]*?)\}").unwrap();
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Clone, Debug)]
 pub struct TranspileOptions {
     pub format: TargetFormat,
+    pub add_read_only: AddReadOnly,
+    pub add_required: AddRequired,
 }
 
 pub fn from_path(filename: &str, options: TranspileOptions) -> Result<String> {
@@ -38,8 +40,11 @@ pub fn from_path(filename: &str, options: TranspileOptions) -> Result<String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn from_str(collection: &str, options: TranspileOptions) -> Result<String> {
     let postman_spec: postman::Spec = serde_json::from_str(collection)?;
-    let oas_spec = Transpiler::transpile(postman_spec);
-    let oas_definition = match options.format {
+    // 复制 options
+    let options_clone = options.clone();
+
+    let oas_spec = Transpiler::transpile(postman_spec, options);
+    let oas_definition: String = match options_clone.format {
         TargetFormat::Json => openapi::to_json(&oas_spec),
         TargetFormat::Yaml => openapi::to_yaml(&oas_spec),
     }?;
@@ -49,8 +54,10 @@ pub fn from_str(collection: &str, options: TranspileOptions) -> Result<String> {
 #[cfg(target_arch = "wasm32")]
 pub fn from_str(collection: &str, options: TranspileOptions) -> Result<String> {
     let postman_spec: postman::Spec = serde_json::from_str(collection)?;
-    let oas_spec = Transpiler::transpile(postman_spec);
-    match options.format {
+    // 复制 options
+    let options_clone = options.clone();
+    let oas_spec = Transpiler::transpile(postman_spec, options);
+    match options_clone.format {
         TargetFormat::Json => openapi::to_json(&oas_spec).map_err(|err| err.into()),
         TargetFormat::Yaml => Err(anyhow::anyhow!(
             "YAML is not supported for WebAssembly. Please convert from YAML to JSON."
@@ -67,27 +74,54 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub fn transpile(collection: JsValue) -> std::result::Result<JsValue, JsValue> {
+pub fn transpile(collection: JsValue, options: JsValue) -> std::result::Result<JsValue, JsValue> {
     let postman_spec: std::result::Result<postman::Spec, serde_json::Error> =
         collection.into_serde();
-    match postman_spec {
-        Ok(s) => {
-            let oas_spec = Transpiler::transpile(s);
+
+    // 将 JsValue 转换为字符串，然后将其反序列化为 TranspileOptions
+    let options_str = options
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("Failed to parse options as string"))?;
+
+    let transpile_options: Result<TranspileOptions, serde_json::Error> =
+        serde_json::from_str(&options_str);
+
+    match (postman_spec, transpile_options) {
+        (Ok(spec), Ok(opts)) => {
+            let options = TranspileOptions::default();
+            println!("Options: {:?}", options);
+
+            let oas_spec = Transpiler::transpile(spec, opts);
             let oas_definition = JsValue::from_serde(&oas_spec);
             match oas_definition {
                 Ok(val) => Ok(val),
                 Err(err) => Err(JsValue::from_str(&err.to_string())),
             }
         }
-        Err(err) => Err(JsValue::from_str(&err.to_string())),
+        (Err(err), _) => Err(JsValue::from_str(&err.to_string())),
+        (_, Err(err)) => Err(JsValue::from_str(&err.to_string())),
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Default)]
+#[derive(PartialEq, Eq, Debug, Default, Deserialize, Clone)]
 pub enum TargetFormat {
     Json,
     #[default]
     Yaml,
+}
+
+#[derive(PartialEq, Eq, Debug, Default, Deserialize, Clone)]
+pub enum AddReadOnly {
+    True,
+    #[default]
+    False,
+}
+
+#[derive(PartialEq, Eq, Debug, Default, Deserialize, Clone)]
+pub enum AddRequired {
+    True,
+    #[default]
+    False,
 }
 
 impl std::str::FromStr for TargetFormat {
@@ -117,7 +151,7 @@ impl<'a> Transpiler<'a> {
         Self { variable_map }
     }
 
-    pub fn transpile(spec: postman::Spec) -> openapi::OpenApi {
+    pub fn transpile(spec: postman::Spec, options: TranspileOptions) -> openapi::OpenApi {
         let description = extract_description(&spec.info.description);
 
         let mut oas = openapi3::Spec {
@@ -177,12 +211,17 @@ impl<'a> Transpiler<'a> {
             }
         }
 
-        transpiler.transform(&mut state, &spec.item);
+        transpiler.transform(&mut state, &spec.item, &options);
 
         openapi::OpenApi::V3_0(Box::new(oas))
     }
 
-    fn transform(&self, state: &mut TranspileState, items: &[postman::Items]) {
+    fn transform(
+        &self,
+        state: &mut TranspileState,
+        items: &[postman::Items],
+        options: &TranspileOptions,
+    ) {
         for item in items {
             if let Some(i) = &item.item {
                 let name = match &item.name {
@@ -191,13 +230,13 @@ impl<'a> Transpiler<'a> {
                 };
                 let description = extract_description(&item.description);
 
-                self.transform_folder(state, i, name, description, &item.auth);
+                self.transform_folder(state, i, name, description, &item.auth, &options);
             } else {
                 let name = match &item.name {
                     Some(n) => n,
                     None => "<request>",
                 };
-                self.transform_request(state, item, name);
+                self.transform_request(state, item, name, &options);
             }
         }
     }
@@ -209,6 +248,7 @@ impl<'a> Transpiler<'a> {
         name: &str,
         description: Option<String>,
         auth: &Option<postman::Auth>,
+        options: &TranspileOptions,
     ) {
         let mut pushed_tag = false;
         let mut pushed_auth = false;
@@ -249,7 +289,7 @@ impl<'a> Transpiler<'a> {
             }
         }
 
-        self.transform(state, items);
+        self.transform(state, items, &options);
 
         if pushed_tag {
             state.hierarchy.pop();
@@ -260,7 +300,13 @@ impl<'a> Transpiler<'a> {
         }
     }
 
-    fn transform_request(&self, state: &mut TranspileState, item: &postman::Items, name: &str) {
+    fn transform_request(
+        &self,
+        state: &mut TranspileState,
+        item: &postman::Items,
+        name: &str,
+        options: &TranspileOptions,
+    ) {
         if let Some(postman::RequestUnion::RequestClass(request)) = &item.request {
             if let Some(postman::Url::UrlClass(u)) = &request.url {
                 if let Some(postman::Host::StringArray(parts)) = &u.host {
@@ -292,7 +338,16 @@ impl<'a> Transpiler<'a> {
                     None
                 };
 
-                self.transform_paths(state, item, request, name, u, paths, security_requirement)
+                self.transform_paths(
+                    state,
+                    item,
+                    request,
+                    name,
+                    u,
+                    paths,
+                    security_requirement,
+                    &options,
+                )
             }
         }
     }
@@ -308,8 +363,12 @@ impl<'a> Transpiler<'a> {
         if let Some(protocol) = &url.protocol {
             proto = format!("{protocol}://", protocol = protocol.clone());
         }
+        let mut port_actual = "".to_string();
+        if let Some(port) = &url.port {
+            port_actual = format!(":{port}", port = port.clone());
+        }
         if let Some(s) = &mut state.oas.servers {
-            let mut server_url = format!("{proto}{host}");
+            let mut server_url = format!("{proto}{host}{port_actual}");
             server_url = self.resolve_variables(&server_url, VAR_REPLACE_CREDITS);
             if !s.iter_mut().any(|srv| srv.url == server_url) {
                 let server = openapi3::Server {
@@ -332,6 +391,7 @@ impl<'a> Transpiler<'a> {
         url: &postman::UrlClass,
         paths: &[postman::PathElement],
         security_requirement: Option<Vec<SecurityRequirement>>,
+        options: &TranspileOptions,
     ) {
         let resolved_segments = paths
             .iter()
@@ -514,7 +574,7 @@ impl<'a> Transpiler<'a> {
         }
 
         if let Some(body) = &request.body {
-            self.extract_request_body(body, op, request_name, content_type);
+            self.extract_request_body(body, op, request_name, content_type, &options);
         }
 
         if !is_merge {
@@ -548,7 +608,7 @@ impl<'a> Transpiler<'a> {
                                 }
                             }
                         }
-                        self.extract_request_body(body, op, request_name, content_type);
+                        self.extract_request_body(body, op, request_name, content_type, &options);
                     }
                 }
                 let mut oas_response = openapi3::Response::default();
@@ -599,7 +659,7 @@ impl<'a> Transpiler<'a> {
                         Ok(v) => match v {
                             serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
                                 response_content_type = Some("application/json".to_string());
-                                if let Some(schema) = Self::generate_schema(&v) {
+                                if let Some(schema) = Self::generate_schema(&v, &options) {
                                     response_content.schema =
                                         Some(openapi3::ObjectOrReference::Object(schema));
                                 }
@@ -900,6 +960,7 @@ impl<'a> Transpiler<'a> {
         op: &mut openapi3::Operation,
         name: &str,
         ct: Option<String>,
+        options: &TranspileOptions,
     ) {
         let mut content_type = ct;
         let mut request_body = if let Some(ObjectOrReference::Object(rb)) = op.request_body.as_mut()
@@ -935,7 +996,7 @@ impl<'a> Transpiler<'a> {
                                         request_body.content.get_mut(ct).unwrap()
                                     };
 
-                                    if let Some(schema) = Self::generate_schema(&v) {
+                                    if let Some(schema) = Self::generate_schema(&v, &options) {
                                         content.schema =
                                             Some(openapi3::ObjectOrReference::Object(schema));
                                     }
@@ -1017,7 +1078,7 @@ impl<'a> Transpiler<'a> {
                             }
                         }
                         let oas_obj = serde_json::Value::Object(oas_data);
-                        if let Some(schema) = Self::generate_schema(&oas_obj) {
+                        if let Some(schema) = Self::generate_schema(&oas_obj, &options) {
                             content.schema = Some(openapi3::ObjectOrReference::Object(schema));
                         }
 
@@ -1066,7 +1127,7 @@ impl<'a> Transpiler<'a> {
                                 let is_binary = t.as_str() == "file";
                                 if let Some(v) = &i.value {
                                     let value = serde_json::Value::String(v.to_string());
-                                    let prop_schema = Self::generate_schema(&value);
+                                    let prop_schema = Self::generate_schema(&value, &options);
                                     if let Some(mut prop_schema) = prop_schema {
                                         if is_binary {
                                             prop_schema.format = Some("binary".to_string());
@@ -1196,7 +1257,19 @@ impl<'a> Transpiler<'a> {
         replace_fn(s)
     }
 
-    fn generate_schema(value: &serde_json::Value) -> Option<openapi3::Schema> {
+    fn generate_schema(
+        value: &serde_json::Value,
+        options: &TranspileOptions,
+    ) -> Option<openapi3::Schema> {
+        let add_read_only = match options.add_read_only {
+            AddReadOnly::True => Some(true),
+            AddReadOnly::False => Some(false),
+        };
+        let add_required = match options.add_required {
+            AddRequired::True => Some(true),
+            AddRequired::False => Some(false),
+        };
+
         match value {
             serde_json::Value::Object(m) => {
                 let mut schema = openapi3::Schema {
@@ -1205,14 +1278,25 @@ impl<'a> Transpiler<'a> {
                 };
 
                 let mut properties = BTreeMap::<String, openapi3::Schema>::new();
+                let mut required_fields = Vec::new();
 
                 for (key, val) in m.iter() {
-                    if let Some(v) = Self::generate_schema(val) {
+                    if let Some(v) = Self::generate_schema(val, &options) {
                         properties.insert(key.to_string(), v);
+                        required_fields.push(key.to_string());
                     }
                 }
 
                 schema.properties = Some(properties);
+
+                if let Some(true) = add_required {
+                    schema.required = if required_fields.is_empty() {
+                        None
+                    } else {
+                        Some(required_fields)
+                    };
+                }
+
                 Some(schema)
             }
             serde_json::Value::Array(a) => {
@@ -1225,7 +1309,7 @@ impl<'a> Transpiler<'a> {
 
                 for n in 0..a.len() {
                     if let Some(i) = a.get(n) {
-                        if let Some(i) = Self::generate_schema(i) {
+                        if let Some(i) = Self::generate_schema(i, &options) {
                             if n == 0 {
                                 item_schema = i;
                             } else {
@@ -1244,6 +1328,11 @@ impl<'a> Transpiler<'a> {
                 let schema = openapi3::Schema {
                     schema_type: Some("string".to_string()),
                     example: Some(value.clone()),
+                    read_only: if let Some(true) = add_read_only {
+                        Some(true)
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 };
                 Some(schema)
@@ -1252,6 +1341,11 @@ impl<'a> Transpiler<'a> {
                 let schema = openapi3::Schema {
                     schema_type: Some("number".to_string()),
                     example: Some(value.clone()),
+                    read_only: if let Some(true) = add_read_only {
+                        Some(true)
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 };
                 Some(schema)
@@ -1260,6 +1354,11 @@ impl<'a> Transpiler<'a> {
                 let schema = openapi3::Schema {
                     schema_type: Some("boolean".to_string()),
                     example: Some(value.clone()),
+                    read_only: if let Some(true) = add_read_only {
+                        Some(true)
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 };
                 Some(schema)
@@ -1268,6 +1367,11 @@ impl<'a> Transpiler<'a> {
                 let schema = openapi3::Schema {
                     nullable: Some(true),
                     example: Some(value.clone()),
+                    read_only: if let Some(true) = add_read_only {
+                        Some(true)
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 };
                 Some(schema)
@@ -1506,7 +1610,7 @@ mod tests {
     #[test]
     fn it_preserves_order_on_paths() {
         let spec: Spec = serde_json::from_str(get_fixture("echo.postman.json").as_ref()).unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         let ordered_paths = [
             "/get",
             "/post",
@@ -1554,7 +1658,7 @@ mod tests {
     #[test]
     fn it_uses_the_correct_content_type_for_form_urlencoded_data() {
         let spec: Spec = serde_json::from_str(get_fixture("echo.postman.json").as_ref()).unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         match oas {
             OpenApi::V3_0(oas) => {
                 let b = oas
@@ -1577,7 +1681,7 @@ mod tests {
     #[test]
     fn it_generates_headers_from_the_request() {
         let spec: Spec = serde_json::from_str(get_fixture("echo.postman.json").as_ref()).unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         match oas {
             OpenApi::V3_0(oas) => {
                 let params = oas
@@ -1622,7 +1726,7 @@ mod tests {
     fn it_generates_root_path_when_no_path_exists_in_collection() {
         let spec: Spec =
             serde_json::from_str(get_fixture("only-root-path.postman.json").as_ref()).unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         match oas {
             OpenApi::V3_0(oas) => {
                 assert!(oas.paths.contains_key("/"));
@@ -1634,7 +1738,7 @@ mod tests {
     fn it_parses_graphql_request_bodies() {
         let spec: Spec =
             serde_json::from_str(get_fixture("graphql.postman.json").as_ref()).unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         match oas {
             OpenApi::V3_0(oas) => {
                 let body = oas
@@ -1674,7 +1778,7 @@ mod tests {
         let spec: Spec =
             serde_json::from_str(get_fixture("duplicate-query-params.postman.json").as_ref())
                 .unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         match oas {
             OpenApi::V3_0(oas) => {
                 let query_param_names = oas
@@ -1720,7 +1824,7 @@ mod tests {
     #[test]
     fn it_uses_the_security_requirement_on_operations() {
         let spec: Spec = serde_json::from_str(get_fixture("echo.postman.json").as_ref()).unwrap();
-        let oas = Transpiler::transpile(spec);
+        let oas = Transpiler::transpile(spec, TranspileOptions::default());
         match oas {
             OpenApi::V3_0(oas) => {
                 let sr1 = oas
