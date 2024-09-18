@@ -1,123 +1,32 @@
-# postman2openapi
+# postman2openapi-anban
 
-Convert Postman collections to OpenAPI definitions.
+转换 postman collection 为 openapi 格式.
+可通过 options 设置 readOnly、required 开关
 
-[![Build status](https://github.com/kevinswiber/postman2openapi/workflows/ci/badge.svg)](https://github.com/kevinswiber/postman2openapi/actions)
 
-**Try it on the Web: https://kevinswiber.github.io/postman2openapi/**
+# 构建
 
--   [CLI](#cli)
-    -   [Installation](#installation)
-    -   [Usage](#usage)
-        -   [Examples](#examples)
--   [JavaScript Library](#javascript-library)
-    -   [Installation](#installation-1)
-    -   [Usage](#usage-1)
-    -   [JavaScript API](#javascript-api)
--   [Build](#build)
--   [License](#license)
+## 构建为 web
+wasm-pack build --release --out-dir ./pkg --target web
 
-## CLI
+使用示例: Postman2Openapi.vue
 
-### Installation
+### vue 引用
+若本地引用，则将 pkg 文件夹，复制到目标 vue 项目下，
+通过 npm i ./pkg 进行本地安装
 
-[Archives of precompiled binaries for postman2openapi are available for Windows,
-macOS and Linux.](https://github.com/kevinswiber/postman2openapi/releases)
+## 构建为 nodejs
+wasm-pack build --release --out-dir ./nodejs --target nodejs
 
-Linux binaries are static executables. Windows binaries are available either as
-built with MinGW (GNU) or with Microsoft Visual C++ (MSVC). When possible,
-prefer MSVC over GNU, but you'll need to have the [Microsoft VC++ 2015
-redistributable](https://www.microsoft.com/en-us/download/details.aspx?id=48145)
-installed.
+使用示例: myJsTest.js
 
-For Rust developers, installation is also available via Cargo. [Installing Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
+# 原 postman2openapi 项目地址
 
-To install the latest published version on crates.io, use:
+https://github.com/rustwasm/wasm-pack
 
-```
-cargo install postman2openapi-cli
-```
+# 官网参考资料
 
-To install from the latest on GitHub, use:
+https://rustwasm.github.io/wasm-pack/book/commands/build.html
 
-```
-cargo install --git https://github.com/kevinswiber/postman2openapi postman2openapi-cli
-```
+https://rustwasm.github.io/docs/wasm-bindgen/
 
-### Usage
-
-```
-USAGE:
-    postman2openapi [OPTIONS] [input-file]
-
-ARGS:
-    <input-file>    The Postman collection to convert; data may also come from stdin
-
-OPTIONS:
-    -f, --output-format <format>    The output format [default: yaml] [possible values: yaml, json]
-    -h, --help                      Print help information
-    -V, --version                   Print version information
-```
-
-#### Examples
-
-```
-postman2openapi collection.json > openapi.yaml
-```
-
-```
-cat collection.json | postman2openapi -f json
-```
-
-## JavaScript library
-
-### Installation
-
-```
-npm install postman2openapi
-```
-
-### Usage
-
-```js
-const collection = require("./collection"); // any Postman collection JSON file
-const { transpile } = require("postman2openapi");
-
-// Returns a JavaScript object representation of the OpenAPI definition.
-const openapi = transpile(collection);
-
-console.log(JSON.stringify(openapi, null, 2));
-```
-
-### JavaScript API
-
-#### transpile(collection: object): object
-
--   collection - An object representing the Postman collection.
--   _returns_ - an OpenAPI definition as a JavaScript object.
-
-## Build
-
-Note: A [Dev Container](https://containers.dev/) is included for convenience.
-
-To take advantage of build recipes, install [just](https://github.com/casey/just#packages).
-
-### `just build`
-
-Builds the Rust library and the CLI packages.
-
-### `just test`
-
-Runs all lint checks (`cargo fmt --check`, `cargo clippy`) and runs all tests, including tests for `wasm32-unknown-unknown` targets (Node.js, Chrome, Firefox).
-
-### `just start-web`
-
-Builds the WebAssembly project and starts a local version of the [postman2openapi site](https://kevinswiber.github.io/postman2openapi/).
-
-### `just prepare`
-
-Builds the Rust library, the CLI, the Node.js library, and the Web site. Then all tests are run.
-
-## License
-
-Apache License 2.0 (Apache-2.0)

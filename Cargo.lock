@@ -294,8 +294,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d5d9eb14b174ee9aa2ef96dc2b94637a2d4b6e7cb873c7e171f0c20c6cf3eac"
 
 [[package]]
-name = "postman2openapi"
-version = "1.2.1"
+name = "postman2openapi-anban"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -317,14 +317,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "postman2openapi-cli"
-version = "1.2.1"
+name = "postman2openapi-anban-cli"
+version = "1.0.0"
 dependencies = [
  "atty",
  "chrono",
  "clap",
  "lazy_static",
- "postman2openapi",
+ "postman2openapi-anban",
 ]
 
 [[package]]

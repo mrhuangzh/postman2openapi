@@ -1,11 +1,11 @@
 [package]
-name = "postman2openapi"
+name = "postman2openapi-anban"
 description = "Convert a Postman collection to an OpenAPI definition. "
-homepage = "https://github.com/kevinswiber/postman2openapi"
-repository = "https://github.com/kevinswiber/postman2openapi"
+homepage = "https://github.com/mrhuangzh/postman2openapi"
+repository = "https://github.com/mrhuangzh/postman2openapi"
 license = "Apache-2.0"
-version = "1.2.1"
-authors = ["Kevin Swiber <kswiber@gmail.com>"]
+version = "1.0.0"
+authors = [""]
 readme = "README.md"
 documentation = "https://docs.rs/postman2openapi"
 edition = "2021"
@@ -15,7 +15,7 @@ exclude = ["ci/*", "tests/*", "web/*"]
 members = ["cli"]
 
 [lib]
-name = "postman2openapi"
+name = "postman2openapianban"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
